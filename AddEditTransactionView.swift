@@ -1,5 +1,5 @@
 // AddEditTransactionView.swift
-// Full file — updated to show remaining budget in red inside the category dropdown (menu-style picker)
+// Full file — fixed payback validation logic (resolves fallback accounts when selection is nil)
 
 import SwiftUI
 
@@ -42,6 +42,73 @@ struct AddEditTransactionView: View {
 
     private func monthKeyForDate(_ d: Date) -> String { store.monthKeyFor(date: d) }
 
+    // MARK: - Payback validation computed properties
+
+    private var amountValue: Double? {
+        let trimmed = amountText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return nil }
+        return Double(trimmed)
+    }
+
+    /// Resolve a concrete "from" checking account id (selected or fallback to first checking account)
+    private var resolvedFromAccountID: UUID? {
+        if let sel = selectedPaymentAccountID { return sel }
+        return store.checkingAccounts().first?.id
+    }
+
+    /// Resolve a concrete "to" credit account id (selected or fallback to first credit account)
+    private var resolvedToAccountID: UUID? {
+        if let sel = selectedCreditAccountID { return sel }
+        return store.creditAccounts().first?.id
+    }
+
+    private var selectedFromBalance: Double {
+        if let fromID = resolvedFromAccountID {
+            return store.balanceForAccount(fromID)
+        }
+        return 0.0
+    }
+
+    private var selectedToDue: Double {
+        if let toID = resolvedToAccountID {
+            return store.dueAmountForCreditAccount(toID)
+        }
+        return 0.0
+    }
+
+    private var paybackAmountExceedsChecking: Bool {
+        guard let m = amountValue else { return false }
+        // Treat available balance as exact; if balance < amount -> exceed
+        return selectedFromBalance < m
+    }
+
+    private var paybackAmountExceedsOwe: Bool {
+        guard let m = amountValue else { return false }
+        return selectedToDue < m
+    }
+
+    private var paybackInvalidCombined: Bool {
+        // true if amount present and either condition fails
+        guard amountValue != nil else { return false }
+        return paybackAmountExceedsChecking || paybackAmountExceedsOwe
+    }
+
+    private var paybackInvalidMessage: String? {
+        guard let m = amountValue, m > 0 else { return nil }
+        let exceedsChecking = paybackAmountExceedsChecking
+        let exceedsOwe = paybackAmountExceedsOwe
+
+        if exceedsChecking && exceedsOwe {
+            return "Warning — payback amount exceeds the selected checking account balance and exceeds the credit account's due amount."
+        } else if exceedsChecking {
+            return "Warning — insufficient checking balance for this payback."
+        } else if exceedsOwe {
+            return "Warning — payback amount is greater than the credit account's due amount."
+        } else {
+            return nil
+        }
+    }
+
     var body: some View {
         NavigationView {
             Form {
@@ -62,7 +129,7 @@ struct AddEditTransactionView: View {
                                     HStack {
                                         Text(a.name)
                                         Spacer()
-                                        Text(store.dueAmountForCreditAccount(a.id), format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                                        Text(store.dueAmountForCreditAccount(a.id), format: .currency(code: Locale.current.currencyCode ?? "USD"))
                                     }
                                     .tag(a.id)
                                 }
@@ -80,13 +147,24 @@ struct AddEditTransactionView: View {
                                     HStack {
                                         Text(a.name)
                                         Spacer()
-                                        Text(store.balanceForAccount(a.id), format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                                        Text(store.balanceForAccount(a.id), format: .currency(code: Locale.current.currencyCode ?? "USD"))
                                     }
                                     .tag(a.id)
                                 }
                             }
                             .pickerStyle(.menu)
                         }
+                    }
+
+                    // SHOW RED WARNING IF INVALID (only when amount is present and invalid)
+                    if let msg = paybackInvalidMessage {
+                        Section {
+                            Text(msg)
+                                .font(.subheadline)
+                                .foregroundColor(.red)
+                                .multilineTextAlignment(.leading)
+                        }
+                        .listRowBackground(Color.clear)
                     }
 
                     Section(header: Text("Note / Date")) {
@@ -112,7 +190,7 @@ struct AddEditTransactionView: View {
                                     Spacer()
                                     let key = monthKeyForDate(date)
                                     if let rem = store.remainingForCategoryMonth(categoryID: cat.id, monthKey: key) {
-                                        Text(rem, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                                        Text(rem, format: .currency(code: Locale.current.currencyCode ?? "USD"))
                                             .foregroundColor(rem < 0 ? .red : .secondary)
                                     } else {
                                         Text("No budget").foregroundColor(.secondary)
@@ -131,7 +209,7 @@ struct AddEditTransactionView: View {
                                         Text(c.name)
                                         Spacer()
                                         if let rem = remOpt {
-                                            Text(rem, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                                            Text(rem, format: .currency(code: Locale.current.currencyCode ?? "USD"))
                                                 .foregroundColor(rem < 0 ? .red : .secondary)
                                         } else {
                                             Text("No budget").foregroundColor(.secondary)
@@ -186,8 +264,8 @@ struct AddEditTransactionView: View {
                     Button("Save") {
                         if isPayback {
                             guard let m = Double(amountText), m > 0,
-                                  let from = selectedPaymentAccountID,
-                                  let to = selectedCreditAccountID else { return }
+                                  let from = resolvedFromAccountID,
+                                  let to = resolvedToAccountID else { return }
                             let due = store.dueAmountForCreditAccount(to)
                             let avail = max(0, store.balanceForAccount(from))
                             guard m <= due && m <= avail else { return }
@@ -202,9 +280,21 @@ struct AddEditTransactionView: View {
                         }
                     }
                     .disabled({
+                        // keep existing disable logic and extend: disable when payback invalid
                         guard !amountText.trimmingCharacters(in: .whitespaces).isEmpty else { return true }
                         if Double(amountText) ?? 0 <= 0 { return true }
-                        return (selectedAccountID == nil)
+
+                        if isPayback {
+                            // require resolved accounts
+                            guard resolvedFromAccountID != nil && resolvedToAccountID != nil else { return true }
+                            // check amounts
+                            guard amountValue != nil else { return true }
+                            // disable Save if payback invalid (exceeds checking or exceeds owe)
+                            if paybackInvalidCombined { return true }
+                            return false
+                        } else {
+                            return (selectedAccountID == nil)
+                        }
                     }())
                 }
             }
