@@ -1,4 +1,7 @@
 // ContentView.swift
+// Minimal change: transaction timestamps in the list now display hours:minutes:seconds.
+// No other logic or features changed.
+
 import SwiftUI
 import UIKit
 
@@ -17,6 +20,14 @@ struct ContentView: View {
     @State private var showBudget = false
 
     private let hiddenDefaultNames: Set<String> = ["Main Checking", "Main Credit"]
+
+    // DATE/TIME FORMATTER: shows date + time including seconds
+    private let dateTimeFormatter: DateFormatter = {
+        let df = DateFormatter()
+        df.dateStyle = .medium
+        df.timeStyle = .medium // medium timeStyle typically includes seconds
+        return df
+    }()
 
     var body: some View {
         NavigationView {
@@ -42,11 +53,9 @@ struct ContentView: View {
                     }
                 }
             }
-            // Add Transaction sheet
             .sheet(isPresented: $showAddTx) {
                 AddEditTransactionView(store: store, accounts: store.accounts, transactionToEdit: nil, defaultAccountID: selectedAccountID)
             }
-            // Add Account sheet
             .sheet(isPresented: $showAddAccount) {
                 AddAccountView(onCreate: { name, type in
                     let a = store.addAccount(name: name, type: type)
@@ -54,11 +63,9 @@ struct ContentView: View {
                     showAddAccount = false
                 })
             }
-            // Manage Accounts sheet
             .sheet(isPresented: $showManageAccounts) {
                 ManageAccountsView(store: store, isPresented: $showManageAccounts, selectedAccountID: $selectedAccountID)
             }
-            // Add Category sheet (explicit)
             .sheet(isPresented: $showAddCategory) {
                 AddCategoryView(onCreate: { name, amount, monthDate in
                     let cat = store.addCategory(name: name)
@@ -67,7 +74,6 @@ struct ContentView: View {
                     showAddCategory = false
                 })
             }
-            // Budget window sheet
             .sheet(isPresented: $showBudget) {
                 BudgetView(store: store)
             }
@@ -181,7 +187,8 @@ struct ContentView: View {
                                 Text(t.note).font(.subheadline).foregroundColor(.secondary).lineLimit(2)
                             }
                             Spacer()
-                            Text(t.date, style: .date).font(.caption).foregroundColor(.gray)
+                            // <-- ONLY CHANGE: use dateTimeFormatter to show date + time including seconds
+                            Text(dateTimeFormatter.string(from: t.date)).font(.caption).foregroundColor(.gray)
                         }
                         HStack {
                             Spacer()
@@ -219,4 +226,3 @@ struct ContentView: View {
         }
     }
 }
-
